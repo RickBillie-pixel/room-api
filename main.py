@@ -158,7 +158,7 @@ class PageData(BaseModel):
 
 class RoomDetectionRequest(BaseModel):
     pages: List[PageData]
-    walls: List[List[Wall]]
+    walls: Union[List[List[Wall]], List[Dict[str, Any]]] = []  # Accept both formats
     scale_m_per_pixel: float = 1.0
 
 class RoomDetectionResponse(BaseModel):
@@ -180,11 +180,57 @@ async def detect_rooms(request: RoomDetectionRequest):
         
         results = []
         
+        # Handle different wall data formats from master API
+        walls_data = request.walls
+        if isinstance(walls_data, list) and len(walls_data) > 0:
+            # Check if it's the new format (objects with page_number and walls)
+            if isinstance(walls_data[0], dict) and "page_number" in walls_data[0]:
+                logger.info("Detected new wall data format from master API")
+                # Convert to expected format
+                converted_walls = []
+                for wall_page in walls_data:
+                    if "walls" in wall_page:
+                        converted_walls.append(wall_page["walls"])
+                    else:
+                        converted_walls.append([])
+                walls_data = converted_walls
+            # If it's already a list of lists, keep as is
+        else:
+            walls_data = [[] for _ in request.pages]  # Empty walls for each page
+        
         for i, page_data in enumerate(request.pages):
             logger.info(f"Analyzing rooms on page {page_data.page_number}")
             
             # Get walls for current page
-            page_walls = request.walls[i] if i < len(request.walls) else []
+            page_walls = walls_data[i] if i < len(walls_data) else []
+            
+            # Convert wall dictionaries to Wall objects if needed
+            if page_walls and isinstance(page_walls[0], dict):
+                # Convert dict to Wall object - simplified for performance
+                wall_objects = []
+                for wall_dict in page_walls:
+                    try:
+                        wall_obj = Wall(
+                            type=wall_dict.get("type", "unknown"),
+                            label_code=wall_dict.get("label_code", "MW00"),
+                            label_nl=wall_dict.get("label_nl", "Onbekend"),
+                            label_en=wall_dict.get("label_en", "Unknown"),
+                            label_type=wall_dict.get("label_type", "constructie"),
+                            thickness_meters=wall_dict.get("thickness_meters", 0.0),
+                            properties=wall_dict.get("properties", {}),
+                            classification=wall_dict.get("classification", {}),
+                            line1_index=wall_dict.get("line1_index", 0),
+                            line2_index=wall_dict.get("line2_index", 0),
+                            orientation=wall_dict.get("orientation", "unknown"),
+                            wall_type=wall_dict.get("wall_type", "unknown"),
+                            confidence=wall_dict.get("confidence", 0.0),
+                            reason=wall_dict.get("reason", "")
+                        )
+                        wall_objects.append(wall_obj)
+                    except Exception as e:
+                        logger.warning(f"Could not convert wall dict to object: {e}")
+                        continue
+                page_walls = wall_objects
             
             # Detect rooms using simplified approach for performance
             rooms = _detect_rooms_from_walls(page_walls, page_data.texts, request.scale_m_per_pixel)
